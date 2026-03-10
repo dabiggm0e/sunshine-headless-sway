@@ -12,18 +12,85 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Headless Sway + Sunshine Installer ==="
 echo ""
 
-# Check for required commands
+# Detect package manager
+install_pkg() {
+    if command -v pacman &>/dev/null; then
+        sudo pacman -S --needed --noconfirm "$@"
+    elif command -v apt &>/dev/null; then
+        sudo apt install -y "$@"
+    else
+        echo "Error: No supported package manager found (pacman or apt)"
+        exit 1
+    fi
+}
+
+is_pkg_installed() {
+    if command -v pacman &>/dev/null; then
+        pacman -Qi "$1" &>/dev/null
+    elif command -v dpkg &>/dev/null; then
+        dpkg -s "$1" &>/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
+# Install dependencies
 for cmd in sway swaybg; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Installing sway and swaybg..."
-        sudo apt install -y sway swaybg
+        install_pkg sway swaybg
         break
     fi
 done
 
-if ! dpkg -s xdg-desktop-portal-wlr &>/dev/null 2>&1; then
+if ! is_pkg_installed xdg-desktop-portal-wlr; then
     echo "Installing xdg-desktop-portal-wlr..."
-    sudo apt install -y xdg-desktop-portal-wlr
+    install_pkg xdg-desktop-portal-wlr
+fi
+
+# Detect desktop environment
+detect_de() {
+    local de="${XDG_CURRENT_DESKTOP:-}"
+    de="${de,,}"  # lowercase
+
+    if [[ "$de" == *"gnome"* ]] || [[ "$de" == *"unity"* ]] || [[ "$de" == *"budgie"* ]]; then
+        echo "gnome"
+    elif [[ "$de" == *"kde"* ]] || [[ "$de" == *"plasma"* ]]; then
+        echo "kde"
+    elif command -v mutter &>/dev/null; then
+        echo "gnome"
+    elif command -v kwin_wayland &>/dev/null || command -v kwin_x11 &>/dev/null; then
+        echo "kde"
+    else
+        echo "unknown"
+    fi
+}
+
+DETECTED_DE=$(detect_de)
+
+echo ""
+if [ "$DETECTED_DE" = "gnome" ]; then
+    echo "Detected desktop environment: GNOME"
+    echo "  → Will use mutter-device-ignore for input isolation"
+elif [ "$DETECTED_DE" = "kde" ]; then
+    echo "Detected desktop environment: KDE Plasma"
+    echo "  → Will strip ID_INPUT tags for input isolation"
+else
+    echo "Could not auto-detect desktop environment."
+    echo ""
+    echo "Input isolation method depends on your desktop:"
+    echo "  1) GNOME  — uses mutter-device-ignore (targeted, GNOME-only)"
+    echo "  2) KDE    — strips ID_INPUT tags (works with KWin and other compositors)"
+    echo ""
+    read -rp "Select your desktop [1/2]: " DE_CHOICE
+    case "$DE_CHOICE" in
+        1) DETECTED_DE="gnome" ;;
+        2) DETECTED_DE="kde" ;;
+        *)
+            echo "Invalid choice. Defaulting to KDE method (works with any compositor)."
+            DETECTED_DE="kde"
+            ;;
+    esac
 fi
 
 # Check for Sunshine
@@ -124,10 +191,16 @@ mkdir -p "$PIPEWIRE_DIR"
 cp "$SCRIPT_DIR/pipewire/sunshine-null-sink.conf" "$PIPEWIRE_DIR/sunshine-null-sink.conf"
 echo "Installed PipeWire persistent audio sink"
 
-# udev rule: move Sunshine virtual inputs off seat0 so GNOME ignores them
-sudo cp "$SCRIPT_DIR/udev/85-sunshine-input-isolation.rules" /etc/udev/rules.d/
+# udev rule: install DE-appropriate input isolation rule
+UDEV_RULE="85-sunshine-input-isolation.rules"
+if [ "$DETECTED_DE" = "gnome" ]; then
+    sudo cp "$SCRIPT_DIR/udev/85-sunshine-input-isolation-gnome.rules" "/etc/udev/rules.d/$UDEV_RULE"
+    echo "Installed GNOME input isolation rule (mutter-device-ignore)"
+else
+    sudo cp "$SCRIPT_DIR/udev/85-sunshine-input-isolation-kde.rules" "/etc/udev/rules.d/$UDEV_RULE"
+    echo "Installed KDE input isolation rule (ID_INPUT stripping)"
+fi
 sudo udevadm control --reload-rules
-echo "Installed udev input isolation rule"
 
 echo "Installed systemd services"
 
@@ -138,6 +211,8 @@ systemctl --user enable sunshine-headless.service
 
 echo ""
 echo "=== Installation complete ==="
+echo ""
+echo "Desktop environment: $([ "$DETECTED_DE" = "gnome" ] && echo "GNOME" || echo "KDE/Other")"
 echo ""
 echo "To start streaming now:"
 echo "  systemctl --user start sway-sunshine.service"

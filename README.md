@@ -33,7 +33,8 @@ cd sunshine-headless-sway
 ```
 
 The install script will:
-- Install missing dependencies (`sway`, `swaybg`, `xdg-desktop-portal-wlr`)
+- Install missing dependencies (`sway`, `swaybg`, `xdg-desktop-portal-wlr`) via pacman or apt
+- Auto-detect your desktop environment (GNOME or KDE) for input isolation
 - Auto-detect your Sunshine installation path
 - Detect the correct Wayland display number and user ID
 - Template all config files with your system's paths
@@ -128,33 +129,50 @@ Sway creates its IPC socket at the path specified by `SWAYSOCK` (`/run/user/<uid
 
 ### Input isolation
 
-Input is fully isolated between your desktop and the streaming session:
+Input is fully isolated between your desktop and the streaming session. Sunshine creates virtual input devices (vendor `0xBEEF`, product `0xDEAD`) that must be hidden from your host desktop while remaining accessible to the headless Sway session.
 
-- A **udev rule** (`85-sunshine-input-isolation.rules`) sets `mutter-device-ignore=1` on Sunshine's virtual input devices (vendor `0xBEEF`, product `0xDEAD`), so GNOME ignores them while they remain on `seat0` for Sway's libinput to enumerate (see [KDE users](#kde-kwin-users) for an alternative approach)
+The install script **auto-detects your desktop environment** and installs the appropriate udev rule. Both approaches install to `/etc/udev/rules.d/85-sunshine-input-isolation.rules`.
+
+#### GNOME (Mutter)
+
+Uses the `mutter-device-ignore` property — a targeted GNOME-specific mechanism that tells Mutter to skip specific devices while leaving them visible to other consumers:
+
+```udev
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{id/vendor}=="beef", ATTRS{id/product}=="dead", ENV{mutter-device-ignore}="1"
+```
+
+#### KDE (KWin)
+
+KWin has no equivalent to `mutter-device-ignore`. Instead, the udev rule strips `ID_INPUT` tags so KWin never discovers the devices as inputs:
+
+```udev
+ACTION=="add|change", SUBSYSTEM=="input", ATTRS{id/vendor}=="beef", ATTRS{id/product}=="dead", ENV{ID_INPUT}="", ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_TOUCHPAD}=""
+```
+
+> **Note**: The KDE method also works for GNOME and other compositors, but is more aggressive — it hides the devices from *all* desktop tools (e.g., Settings panels). The `mutter-device-ignore` method is preferred for GNOME since it's more targeted.
+
+#### How isolation works
+
+- The **udev rule** prevents the host compositor from claiming Sunshine's virtual inputs (method varies by DE, see above)
 - The headless Sway uses `WLR_BACKENDS=headless,libinput` with `LIBSEAT_BACKEND=noop` and runs under the `input` group via `sg` to access input devices without a logind seat
 - The **Sway config** disables all physical host devices and only enables Sunshine's passthrough devices, so your physical keyboard and mouse don't leak into the streaming session
 - Gamepads are read directly by Steam via evdev, bypassing the compositor entirely
 
-#### KDE (KWin) users
+#### Switching DE method manually
 
-KWin has no equivalent to `mutter-device-ignore`, so input isolation requires a different udev approach. Replace the contents of `85-sunshine-input-isolation.rules` with:
-
-```udev
-# Strip input capability from Sunshine virtual devices so KWin never sees them.
-# Devices remain accessible to headless Sway via libinput (which reads evdev directly).
-ACTION=="add|change", SUBSYSTEM=="input", ATTRS{id/vendor}=="beef", ATTRS{id/product}=="dead", ENV{ID_INPUT}="", ENV{ID_INPUT_KEYBOARD}="", ENV{ID_INPUT_MOUSE}="", ENV{ID_INPUT_TOUCHPAD}=""
-```
-
-This removes the `ID_INPUT*` tags that KWin (and libinput at the compositor level) uses to discover input devices. The headless Sway still picks them up because it accesses `/dev/input/event*` directly via the `input` group.
-
-After installing, reload udev rules:
+If you switch desktop environments, reinstall the appropriate rule:
 
 ```bash
+# For GNOME
+sudo cp udev/85-sunshine-input-isolation-gnome.rules /etc/udev/rules.d/85-sunshine-input-isolation.rules
+
+# For KDE
+sudo cp udev/85-sunshine-input-isolation-kde.rules /etc/udev/rules.d/85-sunshine-input-isolation.rules
+
+# Reload
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=input
 ```
-
-> **Note**: This approach also works for GNOME, but is more aggressive — it hides the devices from *all* compositors and desktop tools (e.g., Settings panels). The `mutter-device-ignore` method is preferred for GNOME since it's more targeted.
 
 ### No input / can't control games
 
@@ -245,7 +263,7 @@ Open Moonlight, find your host, and pair using the PIN at `https://YOUR_HOST:479
 
 ```
 /etc/udev/rules.d/
-└── 85-sunshine-input-isolation.rules  # Tells GNOME to ignore Sunshine virtual inputs
+└── 85-sunshine-input-isolation.rules  # Installed by install.sh (GNOME or KDE variant)
 
 ~/.config/
 ├── pipewire/pipewire.conf.d/
