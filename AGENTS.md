@@ -7,7 +7,7 @@
 All changes must be made to the source files in this repository first, then deployed to the live system using `install.sh`.
 
 This means:
-- Source files live in: `systemd/`, `sway-sunshine/`, `sunshine/`, `pipewire/`, `udev/`
+- Source files live in: `systemd/`, `sway-sunshine/`, `sunshine/`, `pipewire/`, `udev/`, `LutrisToSunshine/`
 - Live config paths are: `~/.config/systemd/user/`, `~/.config/sway-sunshine/`, `~/.config/sunshine/`, `~/.config/pipewire/`
 - Always edit the repo files, then run `./install.sh` to copy them to the live system
 - This ensures config changes are tracked in git and can be reproduced
@@ -41,14 +41,14 @@ Called by Sunshine as a **prep-cmd.undo** when a client disconnects. Resets head
 Restores the host's default audio sink after Sunshine changes it (Sunshine sets `audio_sink` as system default on connect). Uses `systemd-run` to spawn a detached watcher that survives prep-cmd cleanup, polling wpctl for 30s to detect and restore the original default sink.
 
 ### `start-steam-game.sh`
-Launches a Steam game in the headless Sway session. **Migrates Steam from the main desktop if it's running there.** Handles:
+Launches a Steam game in the headless Sway session. **Kills ALL Steam processes system-wide** (including any running on the main desktop) before launching in the headless session. Handles:
 - Graceful shutdown of any existing Steam instance (`steam -shutdown`, wait, force kill)
 - Cleanup of Steam IPC files (`~/.steam/steam.pid`, `/tmp/steam_singleton_*`)
 - Launch via `swaymsg exec` in the headless session
 - Accepts: `<appid>`, `bigpicture`, or `0` (plain Steam)
 
 ### `stop-steam-game.sh`
-Shuts down Steam in the headless session and cleans up IPC. Used as **prep-cmd.undo** for Steam entries.
+Shuts down ALL Steam processes system-wide and cleans up IPC. Used as **prep-cmd.undo** for Steam entries. Note: does NOT restart Steam on the main desktop.
 
 > **Note:** `start-steam-game.sh` and `stop-steam-game.sh` are NOT copied by `install.sh`. They must be manually copied to `~/.config/sway-sunshine/` and made executable.
 
@@ -144,7 +144,7 @@ The install script:
 
 **Required setup:**
 - `sunshine.conf` must have `capture = wlr` (this is the repo template default — do NOT change to `kms`)
-- Headless Sway must be running with `WLR_BACKENDS=headless` and `WLR_RENDERER=gles2`
+- Headless Sway must be running with `WLR_BACKENDS=headless` and `WLR_RENDERER=gles2` (or `vulkan` for AMD / modern wlroots + NVIDIA)
 - `sway-sunshine.service` must set `WLR_DRM_DEVICES` to the correct render node (see Hardware Layout below)
 
 
@@ -164,6 +164,50 @@ This tells Vulkan to only use the capture GPU's driver, preventing the other GPU
 
 - **Nested Sway EGL** — KWin doesn't allow nested compositors DRM access. `eglQueryDeviceStringEXT(EGL_DRM_DEVICE_FILE_EXT)` returns `EGL_BAD_PARAMETER`. This works on GNOME/Mutter but not KWin. (The headless backend avoids this by using `WLR_BACKENDS=headless`.)
 - **Portal capture for headless isolation** — Portal captures the active desktop session, not a separate headless session. Use wlr capture with headless Sway for headless isolation.
+
+### Known Issues from Original Setup
+
+The original Reddit post and GitHub repo were AI-generated and contain several mistakes. Documented here to prevent repeating them.
+
+#### KDE `ID_INPUT` Stripping is Fundamentally Broken (Critical)
+
+The udev rule `ENV{ID_INPUT}=""` strips input tags from Sunshine virtual devices, but this hides them from ALL consumers including libinput (which headless Sway uses). libinput reads udev properties and skips devices without `ID_INPUT`. The original setup incorrectly claimed "Devices remain accessible to headless Sway via libinput (which reads evdev directly)" — this is false.
+
+**If input passthrough doesn't work:** The udev rule may have broken the virtual devices for libinput. Fix options (in order of preference):
+
+1. **Remove the udev rule entirely.** The Sway config already handles input isolation via `input * events disabled` followed by explicit `input` enable rules for each Sunshine device. This is the simplest and most reliable approach — KWin won't receive events because Sway disables them at the compositor level.
+2. **Use `seatd`** to separate the headless Sway session onto a different seat, so the main desktop's input grabs never reach it.
+3. **Use KWin config filtering** (`kwinrules`) to exclude Sunshine virtual devices from KWin's input handling, without touching udev properties.
+
+> **Note:** The GNOME `mutter-device-ignore` approach (used on GNOME/Mutter) does NOT have this problem — it targets Mutter specifically without stripping generic input properties.
+
+#### GPU Vendor Support
+
+Both AMD and NVIDIA GPUs are viable for game streaming:
+
+- **AMD:** Mesa open-source drivers + VCN encoding via Vulkan. `WLR_RENDERER=vulkan` is preferred on modern wlroots versions; `gles2` works as fallback.
+- **NVIDIA:** Proprietary or open-source (Nouveau) drivers + NVENC encoding via Vulkan. `WLR_RENDERER=gles2` is the safe default on older wlroots versions due to DRM atomic mode-setting issues; `vulkan` may work on wlroots >= 0.17 with recent driver versions.
+
+The service template defaults to `WLR_RENDERER=gles2` for maximum compatibility. Change to `vulkan` if you have an AMD GPU or modern wlroots + NVIDIA setup and want better rendering performance.
+
+#### `WLR_DRM_DEVICES` Hardcoded in Service Template
+
+The service template has `WLR_DRM_DEVICES=/dev/dri/renderD128` hardcoded. On multi-GPU systems, this may point to the wrong GPU.
+
+**To detect the correct render node:**
+```bash
+ls -la /dev/dri/renderD*
+# Match the render node to the GPU you want for capture:
+ls -la /sys/class/drm/card*/device/vendor  # check vendor ID
+```
+
+Then update `WLR_DRM_DEVICES` in `systemd/sway-sunshine.service` to the matching node. On single-GPU systems, `renderD128` is usually correct.
+
+#### Steam Migration Kills All Steam Processes
+
+`start-steam-game.sh` and `stop-steam-game.sh` kill ALL Steam processes system-wide (`pgrep -x steam`), not just the headless session's Steam. If Steam is running on the main desktop, it will be shut down and migrated to the headless session.
+
+`stop-steam-game.sh` does NOT restart Steam on the main desktop — the comment saying it "restarts it on the main desktop" is outdated. The game session just ends with Steam fully stopped. Users running Steam on their main desktop should be aware that launching a game via Sunshine will terminate their desktop Steam session.
 
 ### Prep-cmd Standardization
 

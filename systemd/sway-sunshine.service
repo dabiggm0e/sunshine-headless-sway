@@ -7,12 +7,18 @@ Type=simple
 Environment=WLR_BACKENDS=headless
 Environment=LIBSEAT_BACKEND=noop
 Environment=WLR_LIBINPUT_NO_DEVICES=1
+# Rendering backend: gles2 is the safe default (works with older wlroots + NVIDIA).
+# For AMD GPUs or modern wlroots + NVIDIA, try vulkan for better performance.
 Environment=WLR_RENDERER=gles2
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_CURRENT_DESKTOP=sway
 Environment=SWAYSOCK=/run/user/1000/sway-sunshine.sock
 Environment=PULSE_SINK=sink-sunshine-stereo
-Environment=WLR_DRM_DEVICES=/dev/dri/card1:/dev/dri/renderD128
+# DRM render node for headless backend. On multi-GPU systems, verify this points to
+# the correct GPU (use "ls -la /dev/dri/renderD*" and check vendor IDs).
+# For single-GPU systems, renderD128 is usually correct.
+Environment=WLR_DRM_DEVICES=/dev/dri/renderD128
+Environment=WAYLAND_DISPLAY=wayland-1
 ExecStartPre=-/bin/rm -f /run/user/1000/sway-sunshine.sock
 ExecStart=/usr/bin/sway --config %h/.config/sway-sunshine/config
 Restart=on-failure

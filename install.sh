@@ -87,8 +87,8 @@ else
         1) DETECTED_DE="gnome" ;;
         2) DETECTED_DE="kde" ;;
         *)
-            echo "Invalid choice. Defaulting to KDE method (works with any compositor)."
-            DETECTED_DE="kde"
+            echo "Invalid choice. Defaulting to GNOME method (safer — targets Mutter specifically, doesn't break libinput)."
+            DETECTED_DE="gnome"
             ;;
     esac
 fi
@@ -169,6 +169,7 @@ fi
 if [ ! -f "$SUNSHINE_CONFIG_DIR/apps.json" ]; then
     sed "s|/home/YOUR_USER/|$HOME/|g" \
         "$SCRIPT_DIR/sunshine/apps.json" > "$SUNSHINE_CONFIG_DIR/apps.json"
+    sed -i "s|/run/user/1000/|/run/user/$USER_ID/|g" "$SUNSHINE_CONFIG_DIR/apps.json"
     echo "Created apps.json"
 else
     echo "apps.json already exists, skipping (see sunshine/apps.json for reference)"
@@ -180,8 +181,7 @@ mkdir -p "$SYSTEMD_DIR"
 sed -e "s|/run/user/1000/|/run/user/$USER_ID/|g" \
     "$SCRIPT_DIR/systemd/sway-sunshine.service" > "$SYSTEMD_DIR/sway-sunshine.service"
 
-sed -e "s|WAYLAND_DISPLAY=wayland-1|WAYLAND_DISPLAY=$HEADLESS_DISPLAY|g" \
-    -e "s|/run/user/1000/|/run/user/$USER_ID/|g" \
+sed -e "s|/run/user/1000/|/run/user/$USER_ID/|g" \
     -e "s|ExecStart=.*|ExecStart=$SUNSHINE_PATH|g" \
     "$SCRIPT_DIR/systemd/sunshine-headless.service" > "$SYSTEMD_DIR/sunshine-headless.service"
 
