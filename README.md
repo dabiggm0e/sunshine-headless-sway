@@ -107,7 +107,7 @@ Restart Sunshine after editing: `systemctl --user restart sunshine-headless.serv
 
 The Sway service uses `WLR_RENDERER=gles2` by default for maximum compatibility. For better rendering performance on modern wlroots versions (0.20+), you can try `WLR_RENDERER=vulkan`.
 
-> **Note:** wlroots 0.19.3 has a known bug with the Vulkan renderer on the `headless` backend causing XR24 format errors. Use gles2 if you're on wlroots 0.19.3.
+> **Note:** wlroots 0.19.3 has a known bug with the Vulkan renderer on the `headless` backend causing XR24 format errors. Use gles2 if you're on wlroots 0.19.3. The stream may work despite these errors if frame capture succeeds.
 
 ### Audio isolation
 
@@ -131,7 +131,7 @@ This setup works with both single-GPU and dual-GPU systems. On multi-GPU setups,
 - **`WLR_DRM_DEVICES`** in `sway-sunshine.service` — tells Sway which render node to use for rendering
 - **`adapter_name`** in `sunshine.conf` — tells Sunshine which render node to use for importing frames via DMA-BUF
 
-Both should point to the same GPU (the one where Sway renders). On single-GPU systems, the defaults are usually correct. On multi-GPU systems, verify with:
+Both should point to the same GPU (the one where Sway renders). On this specific setup, Sway renders on the NVIDIA GPU (`renderD129`) and `adapter_name` in sunshine.conf also points to `renderD129`. The encoding backend (NVENC on NVIDIA or VCN on AMD) is determined by Vulkan auto-selection unless `VK_ICD_FILENAMES` is explicitly set. On single-GPU systems, the defaults are usually correct. On multi-GPU systems, verify with:
 
 ```bash
 ls -la /dev/dri/renderD*
@@ -188,6 +188,7 @@ ACTION=="add|change", SUBSYSTEM=="input", ATTRS{id/vendor}=="beef", ATTRS{id/pro
 - The **udev rule** prevents the host compositor from claiming Sunshine's virtual inputs (method varies by DE, see above)
 - The headless Sway uses `WLR_BACKENDS=headless,libinput` with `LIBSEAT_BACKEND=noop` and runs under the `input` group via `sg` to access input devices without a logind seat
 - The **Sway config** disables all physical host devices and only enables Sunshine's passthrough devices, so your physical keyboard and mouse don't leak into the streaming session
+- **KDE Plasma workaround**: `KWIN_DRM_NO_DIRECT_SCANOUT=1` and `KWIN_FORCE_SW_CURSOR=1` are set in `sunshine-headless.service` to prevent KWin from interfering with the headless session
 - Gamepads are read directly by Steam via evdev, bypassing the compositor entirely
 
 #### Switching DE method manually
@@ -307,7 +308,8 @@ sunshine-headless-sway/
 │   │   ├── config                  # Headless Sway compositor config (input isolation)
 │   │   ├── set-resolution.sh       # Dynamic resolution on connect
 │   │   ├── reset-resolution.sh     # Reset resolution on disconnect
-│   │   └── restore-default-sink.sh # Prevents Sunshine from hijacking host audio
+│   │   ├── restore-default-sink.sh # Prevents Sunshine from hijacking host audio
+│   │   └── sway-wrapper.sh         # PID-tracking wrapper for sway service
 │   ├── sunshine/
 │   │   ├── sunshine.conf           # Sunshine server config
 │   │   └── apps.json               # Game/app entries for Moonlight

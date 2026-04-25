@@ -7,7 +7,7 @@
 All changes must be made to the source files in this repository first, then deployed to the live system using `install.sh`.
 
 This means:
-- Source files live in: `systemd/`, `sway-sunshine/`, `sunshine/`, `pipewire/`, `udev/`, `LutrisToSunshine/`
+- Source files live in: `systemd/`, `sway-sunshine/`, `sunshine/`, `pipewire/`, `udev/`
 - Live config paths are: `~/.config/systemd/user/`, `~/.config/sway-sunshine/`, `~/.config/sunshine/`, `~/.config/pipewire/`
 - Always edit the repo files, then run `./install.sh` to copy them to the live system
 - This ensures config changes are tracked in git and can be reproduced
@@ -49,41 +49,17 @@ After testing, disconnect the stream. The prep-cmd undo hooks will run automatic
 
 ### Vulkan Driver Selection for Sunshine Encoding
 
-Sunshine's encoding backend runs via Vulkan and must use the correct Vulkan ICD for the GPU that will do the encoding. On multi-GPU systems, auto-selection can pick the wrong GPU.
+**Sunshine's Vulkan encoding uses auto-selection by default.** On this setup, both Sway and Sunshine use Vulkan auto-selection — Sway renders on the NVIDIA GPU (`WLR_DRM_DEVICES=/dev/dri/renderD129`) and Sunshine auto-selects the correct Vulkan ICD for encoding.
 
-**How it works on this setup:**
-- `sway-sunshine.service` runs Sway on the NVIDIA GPU (`WLR_DRM_DEVICES=/dev/dri/renderD129`)
-- `sunshine-headless.service` uses `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` so Sunshine encodes via the AMD GPU's VCN encoder
-- This works because Sway renders on NVIDIA (for display) while Sunshine encodes on AMD (for streaming)
-
-**When you'd need NVIDIA's Vulkan ICD for Sunshine:**
-- If you want Sunshine to encode on the NVIDIA GPU (NVENC) instead of AMD (VCN), set `VK_ICD_FILENAMES` to `nvidia_icd.json` in `sunshine-headless.service`
-- This is only needed if the AMD GPU lacks VCN support or you prefer NVENC quality
+On multi-GPU systems, if Sunshine picks the wrong GPU for encoding, you can restrict it using `VK_ICD_FILENAMES` in `sunshine-headless.service`:
+- **Force NVIDIA encoding (NVENC):** `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
+- **Force AMD encoding (VCN):** `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json`
 
 **Verify encoding backend:**
 ```bash
 journalctl --user -u sunshine-headless.service -n 30 --no-pager | grep -iE "encoder|nvenc|vcn"
 # AMD setup: Creating encoder [h264_vcn], [hevc_vcn], [av1_vcn]
 # NVIDIA setup: Creating encoder [h264_nvenc], [hevc_nvenc], [av1_nvenc]
-```
-
-### LutrisToSunshine Display Management
-
-The LutrisToSunshine tool (`lutristosunshine.py`) has its own separate display management system from the `sway-sunshine.service`. When you run `lutristosunshine.py display status`, it checks for its own managed headless stack (using `lutristosunshine-start-headless-sway.sh`), not the systemd service.
-
-If the tool reports "Headless display: not detected" and "Sway=inactive", this is expected when using the `sway-sunshine.service` (systemd-managed) instead of the tool's managed stack. The two systems are separate:
-
-- **systemd-managed** (current setup): `sway-sunshine.service` + `sunshine-headless.service`
-- **LutrisToSunshine-managed**: `lutristosunshine-start-headless-sway.sh` + `lutristosunshine-start-display-sunshine.sh`
-
-To use the LutrisToSunshine-managed stack instead, run:
-```bash
-cd ~/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display start
-```
-
-To stop the LutrisToSunshine-managed stack:
-```bash
-cd ~/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display stop
 ```
 
 ## Wayland Display Layout
@@ -120,6 +96,7 @@ Restores the host's default audio sink after Sunshine changes it (Sunshine sets 
 
 ### `start-steam-game.sh`
 Launches a Steam game in the headless Sway session. **Kills ALL Steam processes system-wide** (including any running on the main desktop) before launching in the headless session. Handles:
+- Checks for Sway IPC socket existence (`sway-sunshine.sock`) before launching
 - Graceful shutdown of any existing Steam instance (`steam -shutdown`, wait, force kill)
 - Cleanup of Steam IPC files (`~/.steam/steam.pid`, `/tmp/steam_singleton_*`)
 - Launch via `swaymsg exec` in the headless session
@@ -135,6 +112,8 @@ Thin wrapper that writes the sway-sunshine process PID to `/run/user/$USER_ID/sw
 
 ### `start-lutris-game.sh`
 Launches a Lutris-managed game in the headless Sway session. Used via `detached` in apps.json entries. Handles:
+- Checks for Sway IPC socket existence before launching
+- Looks up Lutris game by slug if argument isn't a numeric game ID
 - Sets `WAYLAND_DISPLAY=wayland-1` for the headless session
 - Launches the game via the Lutris runtime in the headless session
 - Accepts a Lutris app slug or game ID as argument
@@ -199,10 +178,6 @@ The Desktop entry needs prep-cmd hooks with the full resolution pair:
 }
 ```
 
-### LutrisToSunshine entries
-
-Entries using `lutristosunshine-launch-app.sh` keep their custom launch commands. Add prep-cmd hooks but **do not change the cmd field**. These entries don't use Steam migration, so undo for resolution is `reset-resolution.sh` (matching the prep-cmd pattern for non-Steam entries).
-
 ### Lutris detached entries
 
 Lutris games use the `detached` field with `start-lutris-game.sh`, similar to Steam entries:
@@ -219,10 +194,6 @@ Lutris games use the `detached` field with `start-lutris-game.sh`, similar to St
 ```
 
 Lutris undo uses `stop-lutris-game.sh` as the resolution undo hook, matching the pattern of using the game-stop script as cleanup.
-
-### Duplicate cleanup
-
-When a game has both a LutrisToSunshine entry and a raw `steam steam://run/...` entry with the same UUID, **keep the LutrisToSunshine version and remove the raw steam duplicate**.
 
 ## install.sh Behavior
 
@@ -360,7 +331,7 @@ Users on bleeding-edge distros (CachyOS, Nobara) with recent NVIDIA drivers have
 
 #### `WLR_DRM_DEVICES` Hardcoded in Service Template
 
-The service template has `WLR_DRM_DEVICES=/dev/dri/renderD128` hardcoded. On multi-GPU systems, this may point to the wrong GPU.
+The service template has `WLR_DRM_DEVICES=/dev/dri/renderD129` hardcoded (NVIDIA render node). On multi-GPU systems, this may point to the wrong GPU.
 
 **To detect the correct render node:**
 ```bash
@@ -396,16 +367,13 @@ All apps.json entries should use `sway-sunshine/` scripts for prep-cmds:
 - `~/.config/sway-sunshine/stop-steam-game.sh` (undo for Steam)
 - `~/.config/sway-sunshine/restore-default-sink.sh` (do, undo empty)
 
-LutrisToSunshine (`lutristosunshine.py`) has been updated to generate apps.json using `sway-sunshine/` scripts. The old `lutristosunshine-set-resolution.sh` and `lutristosunshine-reset-resolution.sh` in the LutrisToSunshine bin directory are no longer needed for prep-cmds.
-
 ### apps.json Cleanup Pattern
 
 When cleaning apps.json:
 1. Remove duplicate entries (same UUID) — keep first occurrence
-2. Replace all `lutristosunshine-set-resolution.sh` references with `sway-sunshine/set-resolution.sh`
-3. For Steam games: use `stop-steam-game.sh` as resolution undo
-4. For non-Steam games: use `reset-resolution.sh` as resolution undo
-5. Keep `restore-default-sink.sh` entries as-is
+2. For Steam games: use `stop-steam-game.sh` as resolution undo
+3. For non-Steam games: use `reset-resolution.sh` as resolution undo
+4. Keep `restore-default-sink.sh` entries as-is
 
 ### Research & Troubleshooting Tips
 
