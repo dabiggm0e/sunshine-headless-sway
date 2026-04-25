@@ -244,7 +244,7 @@ grep WAYLAND_DISPLAY ~/.config/systemd/user/sunshine-headless.service
 
 ### Cross-GPU DMA-BUF Failure (KMS-specific)
 
-**The cross-GPU DMA-BUF SEGV crash is specific to `capture = kms` mode, NOT `capture = wlr`.** With wlr capture, frames are shared via Wayland/DMA-BUF between Sway and Sunshine in the same session — no cross-device import is needed.
+**The cross-GPU DMA-BUF SEGV crash is specific to `capture = kms` mode, NOT `capture = wlr`.** With wlr capture, frames are shared via Wayland/DMA-BUF between Sway and Sunshine in the same session — but on multi-GPU systems, Sunshine still needs to know *which* render node to use for DMA-BUF imports (see "Multi-GPU wlr Capture: `adapter_name`" below).
 
 If you ever use `capture = kms` (e.g., for direct DRM capture), you MUST avoid cross-GPU capture+encode:
 - If KMS captures from one GPU but the Vulkan encoder runs on a different GPU, cross-device DMA-BUF import fails with SEGV crash → "No video received." This applies to any AMD + NVIDIA combination.
@@ -252,6 +252,37 @@ If you ever use `capture = kms` (e.g., for direct DRM capture), you MUST avoid c
   - **AMD capture GPU:** `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json`
   - **NVIDIA capture GPU:** `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
 This tells Vulkan to only use the capture GPU's driver, preventing the other GPU from being selected for encoding.
+
+### Multi-GPU wlr Capture: `adapter_name`
+
+**On multi-GPU systems with `capture = wlr`, Sunshine must be told which render node to use for DMA-BUF frame imports.** Without this, Sunshine auto-selects the wrong render node, producing a black screen even though the stream technically connects.
+
+**The problem:** Sway renders on one GPU (e.g., NVIDIA RTX 5090 at `/dev/dri/renderD128`), but Sunshine may auto-select the other GPU's render node (e.g., AMD Radeon 8060S at `/dev/dri/renderD138`) for importing frames via DMA-BUF. Cross-device DMA-BUF imports fail silently on NVIDIA — no crash, no error log, just black frames.
+
+**The fix:** Add `adapter_name` to `sunshine/sunshine.conf`, pointing to the render node of the GPU where Sway is rendering:
+
+```ini
+adapter_name = /dev/dri/renderD128
+```
+
+This tells Sunshine which render node to use for dmabuf imports during wlr capture. It must match the GPU where Sway renders (i.e., the GPU specified in `WLR_DRM_DEVICES` in `sway-sunshine.service`).
+
+**How to detect the correct render node:**
+```bash
+ls -la /dev/dri/renderD*
+# Match the render node to the GPU you want for capture:
+ls -la /sys/class/drm/card*/device/vendor  # check vendor ID
+# 0x10de = NVIDIA, 0x1002 = AMD
+```
+
+**Symptoms of missing `adapter_name`:**
+- Stream connects (Moonlight shows "Connected")
+- Black screen — no video received
+- No frame capture errors in logs (unlike KMS mode which SEGV crashes)
+- Sunshine logs show successful wlr-screencopy connection but no frames are captured
+- `journalctl --user -u sunshine-headless.service` shows no encoder errors
+
+**Reference:** Sunshine issue #5023, PR #5030 (merged April 21, 2026).
 
 ### What Does NOT Work on KDE Plasma Wayland
 
@@ -391,3 +422,6 @@ Document any new findings in AGENTS.md as you discover them.
 **Sunshine PR #5030 (merged April 21, 2026):** Fixed multi-GPU segfault and reverted Vulkan encoder support for wlr capture. Users on Sunshine >= 2026.421 should have this fix. The wlr capture now falls back to VAAPI/NVENC instead of Vulkan encoding.
 
 **Key insight:** The XR24 errors are from Sway's Vulkan renderer, not from Sunshine. They're a wlroots 0.19.3 bug on the headless backend. The stream may work despite these errors if frame capture succeeds.
+## Working Commit Reference
+
+Working commit: `2aeec6a36ffa1e8b6a9be1604b44b0fc62e3ceff`
