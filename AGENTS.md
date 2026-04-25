@@ -21,6 +21,12 @@ This means:
 - If you need to modify system files (e.g., `/etc/udev/rules.d/`, `/etc/systemd/system/`), provide the command and let the user execute it
 - Never use `sudo`, `su`, or `pkexec` in any command you run directly
 
+## Process Protection
+
+**NEVER kill the llama-server process.** It is running the AI model that powers this conversation. Killing it will terminate the current session.
+
+This process consumes significant VRAM (~28 GB) on the NVIDIA RTX 5090, which may compete with game streaming for GPU resources. If Portal 2 fails to launch due to insufficient VRAM, this is expected — the AI model takes priority.
+
 ## Project Overview
 
 This repo manages a **headless Sway + Sunshine game streaming** setup. A separate headless Wayland session (Sway) runs dedicated to game streaming, fully isolated from the main desktop. Sunshine captures the headless session and streams via Moonlight.
@@ -28,6 +34,84 @@ This repo manages a **headless Sway + Sunshine game streaming** setup. A separat
 Key services:
 - `sway-sunshine.service` — headless Sway compositor (no physical display)
 - `sunshine-headless.service` — Sunshine server pointed at the headless session
+
+## Testing with Moonlight CLI
+
+To test game streaming from the command line:
+
+```bash
+flatpak run com.moonlight_stream.Moonlight stream localhost "Portal 2"
+```
+
+Replace `"Portal 2"` with the exact app name from `~/.config/sunshine/apps.json`.
+
+After testing, disconnect the stream. The prep-cmd undo hooks will run automatically (reset resolution, stop Steam, etc.).
+
+### NVENC Encoding on Multi-GPU Systems
+
+On multi-GPU setups (NVIDIA + AMD), Sunshine's NVENC encoder will fail if it's using the wrong Vulkan driver. The error is:
+
+```
+Error: [hevc_nvenc @ 0x...] OpenEncodeSessionEx failed: unsupported device (2)
+Error: Could not open codec [hevc_nvenc]: Function not implemented
+```
+
+**Root cause:** Sunshine uses the AMD Vulkan driver (RADV) instead of the NVIDIA driver, so it can't find NVENC (which only exists on NVIDIA GPUs).
+
+**Fix:** Both `sway-sunshine.service` and `sunshine-headless.service` must use the NVIDIA Vulkan driver:
+
+1. In `sway-sunshine.service`:
+   - Set `WLR_DRM_DEVICES=/dev/dri/renderD128` (NVIDIA render node)
+   - Add `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
+
+2. In `sunshine-headless.service`:
+   - Add `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
+
+This ensures both Sway and Sunshine use the NVIDIA RTX 5090, which has NVENC support. The XR24 format errors from Sway's Vulkan renderer on wlroots 0.19.3 are non-fatal and the stream works despite them.
+
+**Verify:** After deploying, check that NVENC encoders are detected:
+```bash
+journalctl --user -u sunshine-headless.service -n 30 --no-pager | grep -i nvenc
+# Should show: Creating encoder [h264_nvenc], [hevc_nvenc], [av1_nvenc]
+```
+
+### LutrisToSunshine Display Management
+
+The LutrisToSunshine tool (`lutristosunshine.py`) has its own separate display management system from the `sway-sunshine.service`. When you run `lutristosunshine.py display status`, it checks for its own managed headless stack (using `lutristosunshine-start-headless-sway.sh`), not the systemd service.
+
+If the tool reports "Headless display: not detected" and "Sway=inactive", this is expected when using the `sway-sunshine.service` (systemd-managed) instead of the tool's managed stack. The two systems are separate:
+
+- **systemd-managed** (current setup): `sway-sunshine.service` + `sunshine-headless.service`
+- **LutrisToSunshine-managed**: `lutristosunshine-start-headless-sway.sh` + `lutristosunshine-start-display-sunshine.sh`
+
+To use the LutrisToSunshine-managed stack instead, run:
+```bash
+cd /home/moe/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display start
+```
+
+To stop the LutrisToSunshine-managed stack:
+```bash
+cd /home/moe/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display stop
+```
+
+## Wayland Display Layout
+
+**Fixed display numbering — never auto-detect:**
+- `wayland-0` = main desktop (physical monitor)
+- `wayland-1` = headless Sway session (Sunshine streaming target)
+
+**There should never be `wayland-2` or higher on this machine.** The headless Sway session always uses `wayland-1`.
+
+**Important for install.sh:** The auto-detection logic that finds the latest `wayland-*` socket and increments is **wrong** for this setup. It would produce `wayland-2` when `wayland-1` is already in use. Both service files (`sway-sunshine.service` and `sunshine-headless.service`) must hardcode `WAYLAND_DISPLAY=wayland-1`. The `start-steam-game.sh` script also hardcodes `WAYLAND_DISPLAY="wayland-1"`.
+
+**Verification:** After any install or restart, always confirm:
+```bash
+ls /run/user/$(id -u)/wayland-*
+# Should show exactly: wayland-0 wayland-1
+grep WAYLAND_DISPLAY ~/.config/systemd/user/sway-sunshine.service
+grep WAYLAND_DISPLAY ~/.config/systemd/user/sunshine-headless.service
+# Both should show: WAYLAND_DISPLAY=wayland-1
+```
 
 ## Scripts in `sway-sunshine/`
 
@@ -50,7 +134,10 @@ Launches a Steam game in the headless Sway session. **Kills ALL Steam processes 
 ### `stop-steam-game.sh`
 Shuts down ALL Steam processes system-wide and cleans up IPC. Used as **prep-cmd.undo** for Steam entries. Note: does NOT restart Steam on the main desktop.
 
-> **Note:** `start-steam-game.sh` and `stop-steam-game.sh` are NOT copied by `install.sh`. They must be manually copied to `~/.config/sway-sunshine/` and made executable.
+> **Note:** `start-steam-game.sh` and `stop-steam-game.sh` are automatically installed by `install.sh`.
+
+### `sway-wrapper.sh`
+Thin wrapper that writes the sway-sunshine process PID to `/run/user/$USER_ID/sway-sunshine.pid` before exec'ing sway. Uses an EXIT trap to clean up the PID file. This enables external tools (install.sh) to detect and gracefully stop a running sway-sunshine session. Used as the `ExecStart` target in `sway-sunshine.service` instead of calling sway directly.
 
 ## `apps.json` Format & Conventions
 
@@ -120,11 +207,14 @@ When a game has both a LutrisToSunshine entry and a raw `steam steam://run/...` 
 
 The install script:
 - Templates user ID into `set-resolution.sh` and `reset-resolution.sh` (replaces `/run/user/1000/`)
-- Does NOT copy `start-steam-game.sh` or `stop-steam-game.sh` — these must be installed manually
+- Templates `WAYLAND_DISPLAY` into `start-steam-game.sh` based on detected display number
+- Copies `start-steam-game.sh`, `stop-steam-game.sh`, and `sway-wrapper.sh` to `~/.config/sway-sunshine/`
+- Checks for a stale sway-sunshine session via PID file (`/run/user/$USER_ID/sway-sunshine.pid`), sends SIGINT with 10s grace period, falls back to SIGKILL if needed
 - Preserves existing `sunshine.conf` and `apps.json` if they already exist
 - Auto-detects DE for udev rule (GNOME vs KDE input isolation)
 - Installs DE-appropriate udev rule to `/etc/udev/rules.d/85-sunshine-input-isolation.rules` (GNOME rule is active; KDE rule is comment-only — input isolation is handled by Sway config)
 - Auto-detects Wayland display number for the headless session (finds latest `wayland-*` socket and increments)
+- Templates `WAYLAND_DISPLAY` into both `sway-sunshine.service` and `sunshine-headless.service`
 - Replaces `ExecStart` in `sunshine-headless.service` with the detected Sunshine path (preserves `sg input -c` wrapper)
 
 ## KDE Plasma Wayland Compatibility (Updated 2026-04-25)
@@ -133,7 +223,7 @@ The install script:
 
 **`capture = wlr` is the recommended method for KDE Plasma Wayland.** This is the correct and default capture method for this setup.
 
-**How it works:** Sunshine connects to the **headless Sway session** (`WAYLAND_DISPLAY=wayland-1`), NOT to KWin/KDE Plasma. Sway implements `zwlr-screencopy-unstable-v1` natively because it IS a wlroots compositor. The wlr capture path talks directly to Sway's Wayland socket — it never involves KWin at all.
+**How it works:** Sunshine connects to the **headless Sway session** (Wayland display number auto-detected by install.sh — typically `wayland-1` on standard setups, `wayland-2` on KDE where the main desktop uses `wayland-1`), NOT to KWin/KDE Plasma. Sway implements `zwlr-screencopy-unstable-v1` natively because it IS a wlroots compositor. The wlr capture path talks directly to Sway's Wayland socket — it never involves KWin at all.
 
 **This is why the setup works on KDE Plasma:** KWin's lack of wlr-screencopy support is irrelevant because Sunshine captures from Sway, not from the KDE desktop session.
 
@@ -146,7 +236,11 @@ The install script:
 ```bash
 ls /run/user/$(id -u)/wayland-*
 ```
-If the headless Sway session uses a different display number (e.g., `wayland-2`), update both `sway-sunshine.service` and `sunshine-headless.service` to match. The install script auto-detects this, but on KDE it may not always be correct — always verify after installation.
+If the headless Sway session uses a different display number (e.g., `wayland-2`), both service files are automatically templated by install.sh. Always verify after installation:
+```bash
+grep WAYLAND_DISPLAY ~/.config/systemd/user/sway-sunshine.service
+grep WAYLAND_DISPLAY ~/.config/systemd/user/sunshine-headless.service
+```
 
 ### Cross-GPU DMA-BUF Failure (KMS-specific)
 
@@ -206,7 +300,7 @@ Users on bleeding-edge distros (CachyOS, Nobara) with recent NVIDIA drivers have
 ```
 
 **Troubleshooting steps:**
-1. **Verify Wayland display number** — The most common cause is Sunshine pointing at the wrong `WAYLAND_DISPLAY` (e.g., `wayland-2` instead of `wayland-1`). Check with `ls /run/user/$(id -u)/wayland-*`.
+1. **Verify Wayland display number** — Stale `wayland-*` sockets from crashed sessions can confuse install.sh's auto-detection. Check with `ls /run/user/$(id -u)/wayland-*`. Run `./install.sh` to detect and stop any stale sway-sunshine session (via PID file) before re-detecting the display number. Verify the templated value: `grep WAYLAND_DISPLAY ~/.config/systemd/user/sway-sunshine.service`.
 2. **Try `WLR_RENDERER=vulkan`** — Some NVIDIA driver versions work better with the Vulkan renderer than gles2. Update `WLR_RENDERER` in `sway-sunshine.service`.
 3. **Check NVIDIA driver version** — Bleeding-edge drivers (e.g., 595+) may have regressions. Try rolling back to a stable driver version if issues persist.
 4. **Verify Vulkan/VCN availability** — Run `vulkaninfo` and check that the NVIDIA Vulkan ICD is properly installed (`/usr/share/vulkan/icd.d/nvidia_icd.json` exists).
@@ -259,3 +353,41 @@ When cleaning apps.json:
 3. For Steam games: use `stop-steam-game.sh` as resolution undo
 4. For non-Steam games: use `reset-resolution.sh` as resolution undo
 5. Keep `restore-default-sink.sh` entries as-is
+
+### Research & Troubleshooting Tips
+
+When stuck or in doubt, **always use the `searxng_searxng_web_search` tool** to search the web or check Reddit for solutions. This is especially important for:
+- Renderer compatibility issues (wlroots + specific GPU/driver combos)
+- Sunshine frame capture failures
+- Wayland compositor crashes
+- Distribution-specific issues (CachyOS, Nobara, Arch, etc.)
+
+Search terms should include the specific error messages, software versions, and hardware details. Check:
+- GitHub issues for Sunshine, Sway, wlroots
+- Reddit (r/archlinux, r/CachyOS, r/selfhosted)
+- Arch Linux forums
+- NVIDIA developer forums
+
+Document any new findings in AGENTS.md as you discover them.
+
+### Headless Sway Renderer Issues on wlroots 0.19.3
+
+**Known Issue:** wlroots 0.19.3 has a bug with the Vulkan renderer on the `headless` backend. The XR24 format errors (`Format XR24 can't be used with modifier INVALID`) occur on both NVIDIA and AMD GPUs, causing wlr-screencopy frame capture to fail.
+
+**Affected setups:**
+- NVIDIA RTX 5090 (Ada Lovelace) + wlroots 0.19.3
+- AMD GPUs + wlroots 0.19.3 on headless backend
+
+**Symptoms:**
+- Sway logs: `Format XR24 (0x34325258) can't be used with modifier INVALID`
+- Sunshine logs: `[wayland] Frame capture failed`
+- Stream crashes with SEGV or black screen
+
+**Workaround:** The XR24 errors are logged but non-fatal — Sway continues rendering. The wlr-screencopy capture may work intermittently. If the stream crashes, try:
+1. Using the GLES2 renderer instead of Vulkan
+2. Using the llvmpipe (software) renderer as a last resort
+3. Upgrading to wlroots 0.20+ if available (fixes XR24 format handling)
+
+**Sunshine PR #5030 (merged April 21, 2026):** Fixed multi-GPU segfault and reverted Vulkan encoder support for wlr capture. Users on Sunshine >= 2026.421 should have this fix. The wlr capture now falls back to VAAPI/NVENC instead of Vulkan encoding.
+
+**Key insight:** The XR24 errors are from Sway's Vulkan renderer, not from Sunshine. They're a wlroots 0.19.3 bug on the headless backend. The stream may work despite these errors if frame capture succeeds.

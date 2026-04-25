@@ -7,9 +7,12 @@ Type=simple
 Environment=WLR_BACKENDS=headless
 Environment=LIBSEAT_BACKEND=noop
 Environment=WLR_LIBINPUT_NO_DEVICES=1
-# Rendering backend: gles2 is the safe default (works with older wlroots + NVIDIA).
-# For AMD GPUs or modern wlroots + NVIDIA, try vulkan for better performance.
+# Rendering backend: vulkan is recommended for NVIDIA GPUs with modern wlroots (supports EGLImage export for wlr-screencopy).
+# For older wlroots or fallback, try gles2.
 Environment=WLR_RENDERER=gles2
+Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
+# Force Vulkan to use only the NVIDIA driver (ensures consistent GPU usage for Sway + Sunshine).
+Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_CURRENT_DESKTOP=sway
 Environment=SWAYSOCK=/run/user/1000/sway-sunshine.sock
@@ -19,8 +22,8 @@ Environment=PULSE_SINK=sink-sunshine-stereo
 # For single-GPU systems, renderD128 is usually correct.
 Environment=WLR_DRM_DEVICES=/dev/dri/renderD128
 Environment=WAYLAND_DISPLAY=wayland-1
-ExecStartPre=-/bin/rm -f /run/user/1000/sway-sunshine.sock
-ExecStart=/usr/bin/sway --config %h/.config/sway-sunshine/config
+Environment=DISPLAY=:0
+ExecStart=%h/.config/sway-sunshine/sway-wrapper.sh
 Restart=on-failure
 RestartSec=5
 

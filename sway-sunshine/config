@@ -5,6 +5,7 @@
 output * disable
 
 # Default headless output - 1080p fallback, Sunshine prep commands override this
+output HEADLESS-1 enable
 output HEADLESS-1 resolution 1920x1080@60Hz
 
 # Performance tuning
