@@ -275,7 +275,7 @@ def ensure_restore_default_sink(prep_cmds):
         for entry in prep_cmds
     )
     if not has_restore:
-        prep_cmds.insert(0, {"do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh", "undo": ""})
+        prep_cmds.insert(0, {"do": "$HOME/.config/sway-sunshine/restore-default-sink.sh", "undo": ""})
     return prep_cmds
 
 def dedup_restore(prep_cmds):

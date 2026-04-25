@@ -47,32 +47,24 @@ Replace `"Portal 2"` with the exact app name from `~/.config/sunshine/apps.json`
 
 After testing, disconnect the stream. The prep-cmd undo hooks will run automatically (reset resolution, stop Steam, etc.).
 
-### NVENC Encoding on Multi-GPU Systems
+### Vulkan Driver Selection for Sunshine Encoding
 
-On multi-GPU setups (NVIDIA + AMD), Sunshine's NVENC encoder will fail if it's using the wrong Vulkan driver. The error is:
+Sunshine's encoding backend runs via Vulkan and must use the correct Vulkan ICD for the GPU that will do the encoding. On multi-GPU systems, auto-selection can pick the wrong GPU.
 
-```
-Error: [hevc_nvenc @ 0x...] OpenEncodeSessionEx failed: unsupported device (2)
-Error: Could not open codec [hevc_nvenc]: Function not implemented
-```
+**How it works on this setup:**
+- `sway-sunshine.service` runs Sway on the NVIDIA GPU (`WLR_DRM_DEVICES=/dev/dri/renderD129`)
+- `sunshine-headless.service` uses `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json` so Sunshine encodes via the AMD GPU's VCN encoder
+- This works because Sway renders on NVIDIA (for display) while Sunshine encodes on AMD (for streaming)
 
-**Root cause:** Sunshine uses the AMD Vulkan driver (RADV) instead of the NVIDIA driver, so it can't find NVENC (which only exists on NVIDIA GPUs).
+**When you'd need NVIDIA's Vulkan ICD for Sunshine:**
+- If you want Sunshine to encode on the NVIDIA GPU (NVENC) instead of AMD (VCN), set `VK_ICD_FILENAMES` to `nvidia_icd.json` in `sunshine-headless.service`
+- This is only needed if the AMD GPU lacks VCN support or you prefer NVENC quality
 
-**Fix:** Both `sway-sunshine.service` and `sunshine-headless.service` must use the NVIDIA Vulkan driver:
-
-1. In `sway-sunshine.service`:
-   - Set `WLR_DRM_DEVICES=/dev/dri/renderD128` (NVIDIA render node)
-   - Add `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
-
-2. In `sunshine-headless.service`:
-   - Add `Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json`
-
-This ensures both Sway and Sunshine use the NVIDIA RTX 5090, which has NVENC support. The XR24 format errors from Sway's Vulkan renderer on wlroots 0.19.3 are non-fatal and the stream works despite them.
-
-**Verify:** After deploying, check that NVENC encoders are detected:
+**Verify encoding backend:**
 ```bash
-journalctl --user -u sunshine-headless.service -n 30 --no-pager | grep -i nvenc
-# Should show: Creating encoder [h264_nvenc], [hevc_nvenc], [av1_nvenc]
+journalctl --user -u sunshine-headless.service -n 30 --no-pager | grep -iE "encoder|nvenc|vcn"
+# AMD setup: Creating encoder [h264_vcn], [hevc_vcn], [av1_vcn]
+# NVIDIA setup: Creating encoder [h264_nvenc], [hevc_nvenc], [av1_nvenc]
 ```
 
 ### LutrisToSunshine Display Management
@@ -86,31 +78,33 @@ If the tool reports "Headless display: not detected" and "Sway=inactive", this i
 
 To use the LutrisToSunshine-managed stack instead, run:
 ```bash
-cd /home/moe/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display start
+cd ~/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display start
 ```
 
 To stop the LutrisToSunshine-managed stack:
 ```bash
-cd /home/moe/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display stop
+cd ~/sunshine-headless-sway/LutrisToSunshine && python3 lutristosunshine.py display stop
 ```
 
 ## Wayland Display Layout
 
-**Fixed display numbering — never auto-detect:**
+**Standard display numbering:**
 - `wayland-0` = main desktop (physical monitor)
 - `wayland-1` = headless Sway session (Sunshine streaming target)
 
-**There should never be `wayland-2` or higher on this machine.** The headless Sway session always uses `wayland-1`.
+**On most setups, the headless session uses `wayland-1`.** However, on KDE/CachyOS or other setups where SDDM or other components create additional Wayland sockets, the headless session may get `wayland-2` or higher. Always verify:
 
-**Important for install.sh:** The auto-detection logic that finds the latest `wayland-*` socket and increments is **wrong** for this setup. It would produce `wayland-2` when `wayland-1` is already in use. Both service files (`sway-sunshine.service` and `sunshine-headless.service`) must hardcode `WAYLAND_DISPLAY=wayland-1`. The `start-steam-game.sh` script also hardcodes `WAYLAND_DISPLAY="wayland-1"`.
+```bash
+ls /run/user/$(id -u)/wayland-*
+```
+
+**Important for install.sh:** Both service files (`sway-sunshine.service` and `sunshine-headless.service`) hardcode `WAYLAND_DISPLAY=wayland-1`. The `start-steam-game.sh` script also hardcodes `WAYLAND_DISPLAY="wayland-1"`. If your headless session uses a different display number, update these files accordingly.
 
 **Verification:** After any install or restart, always confirm:
 ```bash
 ls /run/user/$(id -u)/wayland-*
-# Should show exactly: wayland-0 wayland-1
 grep WAYLAND_DISPLAY ~/.config/systemd/user/sway-sunshine.service
 grep WAYLAND_DISPLAY ~/.config/systemd/user/sunshine-headless.service
-# Both should show: WAYLAND_DISPLAY=wayland-1
 ```
 
 ## Scripts in `sway-sunshine/`
@@ -139,6 +133,17 @@ Shuts down ALL Steam processes system-wide and cleans up IPC. Used as **prep-cmd
 ### `sway-wrapper.sh`
 Thin wrapper that writes the sway-sunshine process PID to `/run/user/$USER_ID/sway-sunshine.pid` before exec'ing sway. Uses an EXIT trap to clean up the PID file. This enables external tools (install.sh) to detect and gracefully stop a running sway-sunshine session. Used as the `ExecStart` target in `sway-sunshine.service` instead of calling sway directly.
 
+### `start-lutris-game.sh`
+Launches a Lutris-managed game in the headless Sway session. Used via `detached` in apps.json entries. Handles:
+- Sets `WAYLAND_DISPLAY=wayland-1` for the headless session
+- Launches the game via the Lutris runtime in the headless session
+- Accepts a Lutris app slug or game ID as argument
+
+### `stop-lutris-game.sh`
+Stops the Lutris-managed game running in the headless Sway session. Used as **prep-cmd.undo** for Lutris entries. Kills the game process and cleans up any leftover state.
+
+> **Note:** `start-lutris-game.sh` and `stop-lutris-game.sh` are automatically installed by `install.sh`.
+
 ## `apps.json` Format & Conventions
 
 The live config at `~/.config/sunshine/apps.json` uses **Sunshine v2 format** (`"version": 2`).
@@ -150,12 +155,12 @@ Every game should have prep-cmd hooks for resolution and audio sink management:
 ```json
 "prep-cmd": [
   {
-    "do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh",
+    "do": "~/.config/sway-sunshine/restore-default-sink.sh",
     "undo": ""
   },
   {
-    "do": "/home/moe/.config/sway-sunshine/set-resolution.sh",
-    "undo": "/home/moe/.config/sway-sunshine/reset-resolution.sh"
+    "do": "~/.config/sway-sunshine/set-resolution.sh",
+    "undo": "~/.config/sway-sunshine/reset-resolution.sh"
   }
 ]
 ```
@@ -170,10 +175,10 @@ Use `start-steam-game.sh` via `detached` instead of raw `steam steam://run/...` 
 ```json
 {
   "name": "Game Name",
-  "detached": ["/home/moe/.config/sway-sunshine/start-steam-game.sh <appid>"],
+  "detached": ["~/.config/sway-sunshine/start-steam-game.sh <appid>"],
   "prep-cmd": [
-    {"do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
-    {"do": "/home/moe/.config/sway-sunshine/set-resolution.sh", "undo": "/home/moe/.config/sway-sunshine/stop-steam-game.sh"}
+    {"do": "~/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
+    {"do": "~/.config/sway-sunshine/set-resolution.sh", "undo": "~/.config/sway-sunshine/stop-steam-game.sh"}
   ]
 }
 ```
@@ -187,10 +192,9 @@ The Desktop entry needs prep-cmd hooks with the full resolution pair:
 ```json
 {
   "name": "Desktop",
-  "cmd": "",
   "prep-cmd": [
-    {"do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
-    {"do": "/home/moe/.config/sway-sunshine/set-resolution.sh", "undo": "/home/moe/.config/sway-sunshine/reset-resolution.sh"}
+    {"do": "~/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
+    {"do": "~/.config/sway-sunshine/set-resolution.sh", "undo": "~/.config/sway-sunshine/reset-resolution.sh"}
   ]
 }
 ```
@@ -198,6 +202,23 @@ The Desktop entry needs prep-cmd hooks with the full resolution pair:
 ### LutrisToSunshine entries
 
 Entries using `lutristosunshine-launch-app.sh` keep their custom launch commands. Add prep-cmd hooks but **do not change the cmd field**. These entries don't use Steam migration, so undo for resolution is `reset-resolution.sh` (matching the prep-cmd pattern for non-Steam entries).
+
+### Lutris detached entries
+
+Lutris games use the `detached` field with `start-lutris-game.sh`, similar to Steam entries:
+
+```json
+{
+  "name": "Game Name (Lutris)",
+  "detached": ["~/.config/sway-sunshine/start-lutris-game.sh <slug_or_id>"],
+  "prep-cmd": [
+    {"do": "~/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
+    {"do": "~/.config/sway-sunshine/set-resolution.sh", "undo": "~/.config/sway-sunshine/stop-lutris-game.sh"}
+  ]
+}
+```
+
+Lutris undo uses `stop-lutris-game.sh` as the resolution undo hook, matching the pattern of using the game-stop script as cleanup.
 
 ### Duplicate cleanup
 
@@ -210,9 +231,10 @@ The install script:
 - Templates `WAYLAND_DISPLAY` into `start-steam-game.sh` based on detected display number
 - Copies `start-steam-game.sh`, `stop-steam-game.sh`, and `sway-wrapper.sh` to `~/.config/sway-sunshine/`
 - Checks for a stale sway-sunshine session via PID file (`/run/user/$USER_ID/sway-sunshine.pid`), sends SIGINT with 10s grace period, falls back to SIGKILL if needed
-- Preserves existing `sunshine.conf` and `apps.json` if they already exist
+- Overwrites sunshine.conf from template on each run
+- Preserves existing apps.json if it already exists, running auto-migration (prep-cmd updates, duplicate cleanup)
 - Auto-detects DE for udev rule (GNOME vs KDE input isolation)
-- Installs DE-appropriate udev rule to `/etc/udev/rules.d/85-sunshine-input-isolation.rules` (GNOME rule is active; KDE rule is comment-only — input isolation is handled by Sway config)
+- Installs DE-appropriate udev rule to `/etc/udev/rules.d/85-sunshine-input-isolation.rules` (GNOME rule is active; KDE variant is comment-only — input isolation is handled by Sway config)
 - Auto-detects Wayland display number for the headless session (finds latest `wayland-*` socket and increments)
 - Templates `WAYLAND_DISPLAY` into both `sway-sunshine.service` and `sunshine-headless.service`
 - Replaces `ExecStart` in `sunshine-headless.service` with the detected Sunshine path (preserves `sg input -c` wrapper)
@@ -262,7 +284,7 @@ This tells Vulkan to only use the capture GPU's driver, preventing the other GPU
 **The fix:** Add `adapter_name` to `sunshine/sunshine.conf`, pointing to the render node of the GPU where Sway is rendering:
 
 ```ini
-adapter_name = /dev/dri/renderD128
+adapter_name = /dev/dri/renderD129
 ```
 
 This tells Sunshine which render node to use for dmabuf imports during wlr capture. It must match the GPU where Sway renders (i.e., the GPU specified in `WLR_DRM_DEVICES` in `sway-sunshine.service`).
@@ -369,10 +391,10 @@ The `sunshine-headless.service` uses `ExecStart=/usr/bin/sg input -c /usr/bin/su
 ### Prep-cmd Standardization
 
 All apps.json entries should use `sway-sunshine/` scripts for prep-cmds:
-- `/home/moe/.config/sway-sunshine/set-resolution.sh` (do)
-- `/home/moe/.config/sway-sunshine/reset-resolution.sh` (undo for non-Steam)
-- `/home/moe/.config/sway-sunshine/stop-steam-game.sh` (undo for Steam)
-- `/home/moe/.config/sway-sunshine/restore-default-sink.sh` (do, undo empty)
+- `~/.config/sway-sunshine/set-resolution.sh` (do)
+- `~/.config/sway-sunshine/reset-resolution.sh` (undo for non-Steam)
+- `~/.config/sway-sunshine/stop-steam-game.sh` (undo for Steam)
+- `~/.config/sway-sunshine/restore-default-sink.sh` (do, undo empty)
 
 LutrisToSunshine (`lutristosunshine.py`) has been updated to generate apps.json using `sway-sunshine/` scripts. The old `lutristosunshine-set-resolution.sh` and `lutristosunshine-reset-resolution.sh` in the LutrisToSunshine bin directory are no longer needed for prep-cmds.
 
@@ -424,4 +446,4 @@ Document any new findings in AGENTS.md as you discover them.
 **Key insight:** The XR24 errors are from Sway's Vulkan renderer, not from Sunshine. They're a wlroots 0.19.3 bug on the headless backend. The stream may work despite these errors if frame capture succeeds.
 ## Working Commit Reference
 
-Working commit: `2aeec6a36ffa1e8b6a9be1604b44b0fc62e3ceff`
+Working commit: `f8bba00397972d1b0200c0242c84f3c67db4e8a4`
