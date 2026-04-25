@@ -38,14 +38,14 @@ is_pkg_installed() {
 for cmd in sway swaybg; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Installing sway and swaybg..."
-        #install_pkg sway swaybg
+        install_pkg sway swaybg
         break
     fi
 done
 
 if ! is_pkg_installed xdg-desktop-portal-wlr; then
     echo "Installing xdg-desktop-portal-wlr..."
-    #install_pkg xdg-desktop-portal-wlr
+    install_pkg xdg-desktop-portal-wlr
 fi
 
 # Detect desktop environment
@@ -220,6 +220,13 @@ cp "$SCRIPT_DIR/sway-sunshine/stop-steam-game.sh" "$SWAY_CONFIG_DIR/stop-steam-g
 chmod +x "$SWAY_CONFIG_DIR/start-steam-game.sh"
 chmod +x "$SWAY_CONFIG_DIR/stop-steam-game.sh"
 
+# Lutris scripts (template WAYLAND_DISPLAY for non-default display numbers)
+sed "s|WAYLAND_DISPLAY=\"wayland-1\"|WAYLAND_DISPLAY=\"$HEADLESS_DISPLAY\"|" \
+    "$SCRIPT_DIR/sway-sunshine/start-lutris-game.sh" > "$SWAY_CONFIG_DIR/start-lutris-game.sh"
+cp "$SCRIPT_DIR/sway-sunshine/stop-lutris-game.sh" "$SWAY_CONFIG_DIR/stop-lutris-game.sh"
+chmod +x "$SWAY_CONFIG_DIR/start-lutris-game.sh"
+chmod +x "$SWAY_CONFIG_DIR/stop-lutris-game.sh"
+
 # Sway wrapper (tracks session PID for graceful shutdown)
 cp "$SCRIPT_DIR/sway-sunshine/sway-wrapper.sh" "$SWAY_CONFIG_DIR/sway-wrapper.sh"
 chmod +x "$SWAY_CONFIG_DIR/sway-wrapper.sh"
@@ -242,11 +249,14 @@ else
 import json
 import sys
 import re
+import base64
 
 apps_json_path = sys.argv[1]
 home_dir = sys.argv[2]
 start_steam = f"{home_dir}/.config/sway-sunshine/start-steam-game.sh"
 stop_steam = f"{home_dir}/.config/sway-sunshine/stop-steam-game.sh"
+start_lutris = f"{home_dir}/.config/sway-sunshine/start-lutris-game.sh"
+stop_lutris = f"{home_dir}/.config/sway-sunshine/stop-lutris-game.sh"
 
 try:
     with open(apps_json_path, "r") as f:
@@ -258,6 +268,36 @@ except (json.JSONDecodeError, FileNotFoundError) as e:
 apps = data.get("apps", [])
 migrated = 0
 
+def ensure_restore_default_sink(prep_cmds):
+    """Add restore-default-sink.sh as first prep-cmd entry if missing."""
+    has_restore = any(
+        "restore-default-sink.sh" in entry.get("do", "")
+        for entry in prep_cmds
+    )
+    if not has_restore:
+        prep_cmds.insert(0, {"do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh", "undo": ""})
+    return prep_cmds
+
+def dedup_restore(prep_cmds):
+    """Remove duplicate restore-default-sink entries, keeping only the first."""
+    seen_restore = False
+    cleaned = []
+    for entry in prep_cmds:
+        if "restore-default-sink.sh" in entry.get("do", ""):
+            if seen_restore:
+                continue
+            seen_restore = True
+        cleaned.append(entry)
+    return cleaned
+
+def migrate_prep_undo(prep_cmds, stop_script):
+    """Update set-resolution undo from reset-resolution.sh to stop-<type>-game.sh."""
+    for entry in prep_cmds:
+        if "set-resolution.sh" in entry.get("do", "") and "reset-resolution.sh" in entry.get("undo", ""):
+            entry["undo"] = stop_script
+    return prep_cmds
+
+# --- Steam migration ---
 for app in apps:
     cmd = app.get("cmd", "")
     detached = app.get("detached", [])
@@ -274,22 +314,10 @@ for app in apps:
     app["detached"] = [f"{start_steam} {appid}"]
     app["cmd"] = ""
 
-    # Update prep-cmd undo from reset-resolution.sh to stop-steam-game.sh
+    # Update prep-cmd
     prep_cmds = app.get("prep-cmd", [])
-    for entry in prep_cmds:
-        if "set-resolution.sh" in entry.get("do", "") and "reset-resolution.sh" in entry.get("undo", ""):
-            entry["undo"] = stop_steam
-
-    # Remove duplicate restore-default-sink if present (keep first)
-    seen_restore = False
-    cleaned_prep = []
-    for entry in prep_cmds:
-        if "restore-default-sink.sh" in entry.get("do", ""):
-            if seen_restore:
-                continue
-            seen_restore = True
-        cleaned_prep.append(entry)
-    app["prep-cmd"] = cleaned_prep
+    migrate_prep_undo(prep_cmds, stop_steam)
+    app["prep-cmd"] = dedup_restore(prep_cmds)
 
     # Ensure image-path exists for migrated entries
     if "image-path" not in app:
@@ -297,13 +325,62 @@ for app in apps:
 
     migrated += 1
 
+# --- Lutris migration ---
+for app in apps:
+    cmd = app.get("cmd", "")
+
+    # Only migrate entries that use lutristosunshine-launch-app.sh
+    if "lutristosunshine-launch-app.sh" not in cmd:
+        continue
+
+    # Extract base64 from the cmd:
+    # lutristosunshine-launch-app.sh cmd <timeout> <base64>
+    parts = cmd.strip().split()
+    if len(parts) < 4:
+        print(f"  Skipping: {app.get('name', 'unnamed')} (invalid lutris cmd format)")
+        continue
+
+    base64_cmd = parts[3]
+
+    # Decode the base64 command
+    try:
+        decoded = base64.b64decode(base64_cmd).decode("utf-8")
+    except Exception as e:
+        print(f"  Skipping: {app.get('name', 'unnamed')} (base64 decode failed: {e})")
+        continue
+
+    # Extract game ID from lutris:rungameid/<id>
+    id_match = re.search(r'lutris:rungameid/(\d+)', decoded)
+    if not id_match:
+        print(f"  Skipping: {app.get('name', 'unnamed')} (no game ID found in decoded command: {decoded})")
+        continue
+
+    game_id = id_match.group(1)
+    print(f"  Migrating: {app.get('name', 'unnamed')} (game_id: {game_id})")
+
+    # Build the new detached command
+    app["detached"] = [f"{start_lutris} {game_id}"]
+    app["cmd"] = ""
+
+    # Update prep-cmd
+    prep_cmds = app.get("prep-cmd", [])
+    migrate_prep_undo(prep_cmds, stop_lutris)
+    app["prep-cmd"] = ensure_restore_default_sink(prep_cmds)
+    app["prep-cmd"] = dedup_restore(app["prep-cmd"])
+
+    # Set image-path
+    if "image-path" not in app:
+        app["image-path"] = "lutris.png"
+
+    migrated += 1
+
 if migrated > 0:
     with open(apps_json_path, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
-    print(f"  Migrated {migrated} Steam entry(ies) to detached format")
+    print(f"  Migrated {migrated} entry(ies) to detached format")
 else:
-    print("  No Steam entries need migration")
+    print("  No entries need migration")
 PYEOF
 fi
 
