@@ -87,9 +87,7 @@ Use `start-steam-game.sh` via `detached` instead of raw `steam steam://run/...` 
   "prep-cmd": [
     {"do": "/home/moe/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
     {"do": "/home/moe/.config/sway-sunshine/set-resolution.sh", "undo": "/home/moe/.config/sway-sunshine/stop-steam-game.sh"}
-  ],
-  "auto-detach": true,
-  "wait-all": true
+  ]
 }
 ```
 
@@ -112,13 +110,7 @@ The Desktop entry needs prep-cmd hooks with the full resolution pair:
 
 ### LutrisToSunshine entries
 
-Entries using `lutristosunshine-launch-app.sh` keep their custom launch commands. Add prep-cmd hooks but **do not change the cmd field**. These entries don't use Steam migration, so undo for resolution is empty.
-
-### Entries to leave alone
-
-- **Steam Big Picture (Dual)** — uses gamescope with custom `do-dual.sh` script, different setup
-- **Low Res Desktop** — uses raw `xrandr` in detached, no resolution hooks needed
-- **Shutdown PC** — system command, no hooks needed
+Entries using `lutristosunshine-launch-app.sh` keep their custom launch commands. Add prep-cmd hooks but **do not change the cmd field**. These entries don't use Steam migration, so undo for resolution is `reset-resolution.sh` (matching the prep-cmd pattern for non-Steam entries).
 
 ### Duplicate cleanup
 
@@ -131,19 +123,22 @@ The install script:
 - Does NOT copy `start-steam-game.sh` or `stop-steam-game.sh` — these must be installed manually
 - Preserves existing `sunshine.conf` and `apps.json` if they already exist
 - Auto-detects DE for udev rule (GNOME vs KDE input isolation)
+- Installs DE-appropriate udev rule to `/etc/udev/rules.d/85-sunshine-input-isolation.rules` (GNOME rule is active; KDE rule is comment-only — input isolation is handled by Sway config)
+- Auto-detects Wayland display number for the headless session (finds latest `wayland-*` socket and increments)
+- Replaces `ExecStart` in `sunshine-headless.service` with the detected Sunshine path (preserves `sg input -c` wrapper)
 
 ## KDE Plasma Wayland Compatibility (Updated 2026-04-25)
 
 ### Capture Method: wlr
 
-**`capture = wlr` is the working method for KDE Plasma Wayland.** This is the correct and default capture method for this setup.
+**`capture = wlr` is the recommended method for KDE Plasma Wayland.** This is the correct and default capture method for this setup.
 
 **How it works:** Sunshine connects to the **headless Sway session** (`WAYLAND_DISPLAY=wayland-1`), NOT to KWin/KDE Plasma. Sway implements `zwlr-screencopy-unstable-v1` natively because it IS a wlroots compositor. The wlr capture path talks directly to Sway's Wayland socket — it never involves KWin at all.
 
 **This is why the setup works on KDE Plasma:** KWin's lack of wlr-screencopy support is irrelevant because Sunshine captures from Sway, not from the KDE desktop session.
 
 **Required setup:**
-- `sunshine.conf` must have `capture = wlr` (this is the repo template default — do NOT change to `kms`)
+- `sunshine.conf` must have `capture = wlr` (this is the repo template default — kms works but has cross-GPU pitfalls on multi-GPU systems)
 - Headless Sway must be running with `WLR_BACKENDS=headless` and `WLR_RENDERER=gles2` (or `vulkan` for AMD / modern wlroots + NVIDIA)
 - `sway-sunshine.service` must set `WLR_DRM_DEVICES` to the correct render node (see Hardware Layout below)
 
@@ -168,6 +163,7 @@ This tells Vulkan to only use the capture GPU's driver, preventing the other GPU
 
 - **Nested Sway EGL** — KWin doesn't allow nested compositors DRM access. `eglQueryDeviceStringEXT(EGL_DRM_DEVICE_FILE_EXT)` returns `EGL_BAD_PARAMETER`. This works on GNOME/Mutter but not KWin. (The headless backend avoids this by using `WLR_BACKENDS=headless`.)
 - **Portal capture for headless isolation** — Portal captures the active desktop session, not a separate headless session. Use wlr capture with headless Sway for headless isolation.
+- **gamescope for headless capture** — Gamescope has resolution limitations based on display EDID compatibility (e.g., 1280x800@90 may not be supported). Use wlr capture with headless Sway instead, which supports arbitrary resolutions and refresh rates.
 
 ### Known Issues from Original Setup
 
