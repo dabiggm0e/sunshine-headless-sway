@@ -147,7 +147,11 @@ The install script:
 - Headless Sway must be running with `WLR_BACKENDS=headless` and `WLR_RENDERER=gles2` (or `vulkan` for AMD / modern wlroots + NVIDIA)
 - `sway-sunshine.service` must set `WLR_DRM_DEVICES` to the correct render node (see Hardware Layout below)
 
-
+**Wayland display numbering on KDE/CachyOS:** On some KDE setups (especially CachyOS), SDDM or other components may create additional Wayland sockets, causing the headless session to get `wayland-2` instead of `wayland-1`. To verify the correct display number:
+```bash
+ls /run/user/$(id -u)/wayland-*
+```
+If the headless Sway session uses a different display number (e.g., `wayland-2`), update both `sway-sunshine.service` and `sunshine-headless.service` to match. The install script auto-detects this, but on KDE it may not always be correct — always verify after installation.
 
 ### Cross-GPU DMA-BUF Failure (KMS-specific)
 
@@ -175,8 +179,12 @@ The udev rule `ENV{ID_INPUT}=""` strips input tags from Sunshine virtual devices
 
 **If input passthrough doesn't work:** The udev rule may have broken the virtual devices for libinput. Fix options (in order of preference):
 
-1. **Remove the udev rule entirely.** The Sway config already handles input isolation via `input * events disabled` followed by explicit `input` enable rules for each Sunshine device. This is the simplest and most reliable approach — KWin won't receive events because Sway disables them at the compositor level.
-2. **Use `seatd`** to separate the headless Sway session onto a different seat, so the main desktop's input grabs never reach it.
+1. **Use `seatd`** to separate the headless Sway session onto a different seat, so the main desktop's input grabs never reach it. This is the most reliable solution for KDE Plasma — proven working on CachyOS with dual GPU setups. Configure:
+   - Install `seatd` package
+   - Enable `seatd.service`
+   - Change `LIBSEAT_BACKEND=noop` to `LIBSEAT_BACKEND=seatd` in `sway-sunshine.service`
+   - Add `Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)` if needed
+2. **Remove the udev rule entirely.** The Sway config already handles input isolation via `input * events disabled` followed by explicit `input` enable rules for each Sunshine device. This works in most cases but KWin may still see the virtual devices (without grabbing them).
 3. **Use KWin config filtering** (`kwinrules`) to exclude Sunshine virtual devices from KWin's input handling, without touching udev properties.
 
 > **Note:** The GNOME `mutter-device-ignore` approach (used on GNOME/Mutter) does NOT have this problem — it targets Mutter specifically without stripping generic input properties.
@@ -189,6 +197,23 @@ Both AMD and NVIDIA GPUs are viable for game streaming:
 - **NVIDIA:** Proprietary or open-source (Nouveau) drivers + NVENC encoding via Vulkan. `WLR_RENDERER=gles2` is the safe default on older wlroots versions due to DRM atomic mode-setting issues; `vulkan` may work on wlroots >= 0.17 with recent driver versions.
 
 The service template defaults to `WLR_RENDERER=gles2` for maximum compatibility. Change to `vulkan` if you have an AMD GPU or modern wlroots + NVIDIA setup and want better rendering performance.
+
+#### NVIDIA Encoder Failures on Bleeding-Edge Drivers
+
+Users on bleeding-edge distros (CachyOS, Nobara) with recent NVIDIA drivers have reported NVENC encoder failures where all encoders (NVENC, VAAPI, software) fail at startup. Symptoms include:
+```
+[2026-XX-XX XX:XX:XX.XXX]: Info: Trying encoder [nvenc]
+[2026-XX-XX XX:XX:XX.XXX]: Info: Encoder [nvenc] failed
+[2026-XX-XX XX:XX:XX.XXX]: Info: Trying encoder [vaapi]
+[2026-XX-XX XX:XX:XX.XXX]: Info: Encoder [vaapi] failed
+[2026-XX-XX XX:XX:XX.XXX]: Fatal: Unable to find display or encoder during startup.
+```
+
+**Troubleshooting steps:**
+1. **Verify Wayland display number** — The most common cause is Sunshine pointing at the wrong `WAYLAND_DISPLAY` (e.g., `wayland-2` instead of `wayland-1`). Check with `ls /run/user/$(id -u)/wayland-*`.
+2. **Try `WLR_RENDERER=vulkan`** — Some NVIDIA driver versions work better with the Vulkan renderer than gles2. Update `WLR_RENDERER` in `sway-sunshine.service`.
+3. **Check NVIDIA driver version** — Bleeding-edge drivers (e.g., 595+) may have regressions. Try rolling back to a stable driver version if issues persist.
+4. **Verify Vulkan/VCN availability** — Run `vulkaninfo` and check that the NVIDIA Vulkan ICD is properly installed (`/usr/share/vulkan/icd.d/nvidia_icd.json` exists).
 
 #### `WLR_DRM_DEVICES` Hardcoded in Service Template
 
@@ -208,6 +233,17 @@ Then update `WLR_DRM_DEVICES` in `systemd/sway-sunshine.service` to the matching
 `start-steam-game.sh` and `stop-steam-game.sh` kill ALL Steam processes system-wide (`pgrep -x steam`), not just the headless session's Steam. If Steam is running on the main desktop, it will be shut down and migrated to the headless session.
 
 `stop-steam-game.sh` does NOT restart Steam on the main desktop — the comment saying it "restarts it on the main desktop" is outdated. The game session just ends with Steam fully stopped. Users running Steam on their main desktop should be aware that launching a game via Sunshine will terminate their desktop Steam session.
+
+#### `sg input` Wrapper May Not Work on All Distributions
+
+The `sunshine-headless.service` uses `ExecStart=/usr/bin/sg input -c /usr/bin/sunshine` to grant Sunshine access to the `input` group for device passthrough. On some distributions (notably Nobara and some CachyOS setups), this wrapper may fail because:
+- The `sg` binary path differs (`/usr/bin/sg` vs other locations)
+- The `input` group configuration differs from expectations
+
+**If Sunshine fails to start with input-related errors:**
+1. Check if `/usr/bin/sg` exists on your system
+2. Try replacing `ExecStart=/usr/bin/sg input -c /usr/bin/sunshine` with `ExecStart=/usr/bin/sunshine` in `sunshine-headless.service` (Sunshine may already have the necessary permissions via udev rules)
+3. Reload and restart: `systemctl --user daemon-reload && systemctl --user restart sunshine-headless.service`
 
 ### Prep-cmd Standardization
 
