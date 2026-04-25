@@ -12,7 +12,7 @@ Environment=WLR_LIBINPUT_NO_DEVICES=1
 Environment=WLR_RENDERER=gles2
 Environment=WLR_RENDERER_ALLOW_SOFTWARE=1
 # Force Vulkan to use only the NVIDIA driver (ensures consistent GPU usage for Sway + Sunshine).
-Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+# VK_ICD_FILENAMES removed - allowing Vulkan auto-selection
 Environment=XDG_SESSION_TYPE=wayland
 Environment=XDG_CURRENT_DESKTOP=sway
 Environment=SWAYSOCK=/run/user/1000/sway-sunshine.sock
