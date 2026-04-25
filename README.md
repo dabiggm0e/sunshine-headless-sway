@@ -99,6 +99,22 @@ Edit `~/.config/sunshine/apps.json` to add games. The install script provides te
 }
 ```
 
+### Bulk import with LutrisToSunshine
+
+For bulk importing from multiple launchers, this repo bundles [LutrisToSunshine](https://github.com/Arbitrate3280/LutrisToSunshine) ([MIT](./LutrisToSunshine/LICENSE)) — a CLI tool that scans installed game launchers and imports games into Sunshine with optional cover art from SteamGridDB.
+
+**Supported launchers:** Lutris (native + Flatpak), Heroic (Legendary, GOG, Nile, Sideload — native + Flatpak), Bottles, Steam, Faugus, Ryubing, RetroArch, Eden.
+
+```bash
+cd LutrisToSunshine
+pip install -r requirements.txt
+python3 lutristosunshine.py --all --cover --force
+```
+
+Use `--all` to skip the selection prompt, `--cover` to download SteamGridDB artwork, and `--force` to overwrite existing entries. The tool detects whether Sunshine or Apollo is running and adds games via the API.
+
+> **Tip:** After importing, run `./install.sh` to auto-migrate any `lutristosunshine-launch-app.sh` entries to use the repo's `start-lutris-game.sh` scripts.
+
 Restart Sunshine after editing: `systemctl --user restart sunshine-headless.service`
 
 ## How it works
@@ -301,6 +317,7 @@ Open Moonlight, find your host, and pair using the PIN at `https://YOUR_HOST:479
 
 sunshine-headless-sway/
 ├── install.sh                  # One-command setup script
+├── LutrisToSunshine/           # Bundled game importer (LutrisToSunshine)
 ├── ~/.config/
 │   ├── pipewire/pipewire.conf.d/
 │   │   └── sunshine-null-sink.conf # Persistent audio sink (survives disconnect)
