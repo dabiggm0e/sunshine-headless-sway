@@ -21,6 +21,16 @@ This means:
 - If you need to modify system files (e.g., `/etc/udev/rules.d/`, `/etc/systemd/system/`), provide the command and let the user execute it
 - Never use `sudo`, `su`, or `pkexec` in any command you run directly
 
+## Push Discipline
+
+**NEVER push to remote origin without explicit user consent.**
+
+This means:
+- Do not run `git push` or `gh push` or any command that sends commits to a remote repository
+- Do not run `git push --force`, `git push --force-with-lease`, or any force push
+- Always ask the user before pushing, and let them run the push command themselves
+- Local commits and merges are fine — only remote pushes require explicit approval
+
 ## Process Protection
 
 **NEVER kill the llama-server process.** It is running the AI model that powers this conversation. Killing it will terminate the current session.
