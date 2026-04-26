@@ -1,17 +1,23 @@
 #!/bin/bash
 # Stops a Lutris game launched via start-lutris-game.sh
-# Usage: stop-lutris-game.sh <lutris_game_id>
+# Usage: stop-lutris-game.sh [lutris_game_id]
+#   Without arguments: stops ANY Lutris game process in the headless session
+#   With game ID: stops only the process matching that specific game's rungameid URI
 
 GAME_ID="$1"
 
+# Build the pgrep pattern based on whether a game ID was provided
 if [ -z "$GAME_ID" ]; then
-    echo "Usage: $0 <lutris_game_id>"
-    exit 1
+    # No argument: match ANY Lutris game process (rungameid/ without specific ID)
+    PATTERN="lutris:rungameid/"
+else
+    # Game ID provided: match only this specific game
+    PATTERN="lutris:rungameid/$GAME_ID"
 fi
 
-# Find and kill the game process matching this game's rungameid URI
+# Find and kill the game process(es)
 # Lutris launches the game with the rungameid URI in its process args
-MATCHED_PIDS=$(pgrep -f "lutris:rungameid/$GAME_ID" 2>/dev/null || true)
+MATCHED_PIDS=$(pgrep -f "$PATTERN" 2>/dev/null || true)
 
 if [ -z "$MATCHED_PIDS" ]; then
     exit 0
@@ -44,5 +50,5 @@ done
 
 sleep 1
 
-# Final cleanup: kill any remaining processes with this game's rungameid
-pkill -f "lutris:rungameid/$GAME_ID" 2>/dev/null
+# Final cleanup: kill any remaining processes matching the pattern
+pkill -f "$PATTERN" 2>/dev/null
