@@ -840,7 +840,7 @@ def add_game_to_sunshine(
         if is_steam:
             prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-steam-game.sh")
         elif is_lutris:
-            prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-lutris-game.sh") + " " + str(game_id)
+            prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-lutris-game.sh")
     else:
         prep_cmd = []
 
