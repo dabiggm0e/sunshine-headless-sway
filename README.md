@@ -27,7 +27,7 @@ This setup runs a separate headless Wayland compositor (Sway) dedicated to game 
 ## Quick install
 
 ```bash
-git clone https://github.com/daaaaan/sunshine-headless-sway.git
+git clone https://github.com/dabiggm0e/sunshine-headless-sway.git
 cd sunshine-headless-sway
 ./install.sh
 ```

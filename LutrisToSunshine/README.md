@@ -333,4 +333,4 @@ The same flags still apply:
 - [Eden](https://eden-emu.dev/)
 - [Sunshine](https://app.lizardbyte.dev/Sunshine/)
 - [SteamGridDB](https://www.steamgriddb.com/)
-- [Sunshine Headless Sway](https://github.com/daaaaan/sunshine-headless-sway)
+- [Sunshine Headless Sway](https://github.com/dabiggm0e/sunshine-headless-sway)

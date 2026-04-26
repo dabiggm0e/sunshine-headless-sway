@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Headless Sway + Sunshine Game Streaming Setup
-# https://github.com/daaaaan/sunshine-headless-sway
+# https://github.com/dabiggm0e/sunshine-headless-sway
 
 SWAY_CONFIG_DIR="$HOME/.config/sway-sunshine"
 SUNSHINE_CONFIG_DIR="$HOME/.config/sunshine"
