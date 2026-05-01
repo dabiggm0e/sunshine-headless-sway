@@ -805,6 +805,9 @@ def add_game_to_sunshine(
     # Detect Lutris games
     is_lutris = runner == "Lutris"
 
+    # Detect Heroic games
+    is_heroic = runner in ["legendary", "gog", "nile", "sideload"]
+
     # Prefix commands with flatpak-spawn --host if Sunshine is installed as Flatpak
     if INSTALLATION_TYPE == "flatpak":
         cmd = f"flatpak-spawn --host {cmd}"
@@ -822,6 +825,10 @@ def add_game_to_sunshine(
     elif is_lutris:
         cmd = ""
         detached = [str(SWAY_SUNSHINE_DIR / "start-lutris-game.sh") + " " + str(game_id)]
+    # For Heroic games, use start-heroic-game.sh via detached instead of raw cmd
+    elif is_heroic:
+        cmd = ""
+        detached = [str(SWAY_SUNSHINE_DIR / "start-heroic-game.sh") + " " + str(runner) + " " + str(game_id)]
     else:
         detached = []
 
@@ -841,6 +848,8 @@ def add_game_to_sunshine(
             prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-steam-game.sh")
         elif is_lutris:
             prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-lutris-game.sh")
+        elif is_heroic:
+            prep_cmd[1]["undo"] = str(SWAY_SUNSHINE_DIR / "stop-heroic-game.sh")
     else:
         prep_cmd = []
 

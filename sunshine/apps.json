@@ -69,6 +69,23 @@
         }
       ],
       "image-path": "lutris.png"
+    },
+    {
+      "name": "Heroic",
+      "detached": [
+        "/home/YOUR_USER/.config/sway-sunshine/start-heroic-game.sh legendary <game_id>"
+      ],
+      "prep-cmd": [
+        {
+          "do": "/home/YOUR_USER/.config/sway-sunshine/restore-default-sink.sh",
+          "undo": ""
+        },
+        {
+          "do": "/home/YOUR_USER/.config/sway-sunshine/set-resolution.sh",
+          "undo": "/home/YOUR_USER/.config/sway-sunshine/stop-heroic-game.sh"
+        }
+      ],
+      "image-path": "heroic.png"
     }
   ]
 }

@@ -227,6 +227,13 @@ cp "$SCRIPT_DIR/sway-sunshine/stop-lutris-game.sh" "$SWAY_CONFIG_DIR/stop-lutris
 chmod +x "$SWAY_CONFIG_DIR/start-lutris-game.sh"
 chmod +x "$SWAY_CONFIG_DIR/stop-lutris-game.sh"
 
+# Heroic scripts (template WAYLAND_DISPLAY for non-default display numbers)
+sed "s|WAYLAND_DISPLAY=\"wayland-1\"|WAYLAND_DISPLAY=\"$HEADLESS_DISPLAY\"|" \
+    "$SCRIPT_DIR/sway-sunshine/start-heroic-game.sh" > "$SWAY_CONFIG_DIR/start-heroic-game.sh"
+cp "$SCRIPT_DIR/sway-sunshine/stop-heroic-game.sh" "$SWAY_CONFIG_DIR/stop-heroic-game.sh"
+chmod +x "$SWAY_CONFIG_DIR/start-heroic-game.sh"
+chmod +x "$SWAY_CONFIG_DIR/stop-heroic-game.sh"
+
 # Sway wrapper (tracks session PID for graceful shutdown)
 cp "$SCRIPT_DIR/sway-sunshine/sway-wrapper.sh" "$SWAY_CONFIG_DIR/sway-wrapper.sh"
 chmod +x "$SWAY_CONFIG_DIR/sway-wrapper.sh"
@@ -257,6 +264,8 @@ start_steam = f"{home_dir}/.config/sway-sunshine/start-steam-game.sh"
 stop_steam = f"{home_dir}/.config/sway-sunshine/stop-steam-game.sh"
 start_lutris = f"{home_dir}/.config/sway-sunshine/start-lutris-game.sh"
 stop_lutris = f"{home_dir}/.config/sway-sunshine/stop-lutris-game.sh"
+start_heroic = f"{home_dir}/.config/sway-sunshine/start-heroic-game.sh"
+stop_heroic = f"{home_dir}/.config/sway-sunshine/stop-heroic-game.sh"
 
 try:
     with open(apps_json_path, "r") as f:
@@ -371,6 +380,40 @@ for app in apps:
     # Set image-path
     if "image-path" not in app:
         app["image-path"] = "lutris.png"
+
+    migrated += 1
+
+# --- Heroic migration ---
+for app in apps:
+    cmd = app.get("cmd", "")
+
+    # Only migrate entries that use heroic://launch/ pattern
+    if "heroic://launch/" not in cmd:
+        continue
+
+    # Extract runner and game_id from heroic://launch/<runner>/<game_id>
+    hero_match = re.search(r'heroic://launch/([^/]+)/([^/\s]+)', cmd)
+    if not hero_match:
+        print(f"  Skipping: {app.get('name', 'unnamed')} (invalid heroic cmd format)")
+        continue
+
+    runner = hero_match.group(1)
+    game_id = hero_match.group(2)
+    print(f"  Migrating: {app.get('name', 'unnamed')} (runner: {runner}, game_id: {game_id})")
+
+    # Build the new detached command
+    app["detached"] = [f"{start_heroic} {runner} {game_id}"]
+    app["cmd"] = ""
+
+    # Update prep-cmd
+    prep_cmds = app.get("prep-cmd", [])
+    migrate_prep_undo(prep_cmds, stop_heroic)
+    app["prep-cmd"] = ensure_restore_default_sink(prep_cmds)
+    app["prep-cmd"] = dedup_restore(app["prep-cmd"])
+
+    # Set image-path
+    if "image-path" not in app:
+        app["image-path"] = "heroic.png"
 
     migrated += 1
 

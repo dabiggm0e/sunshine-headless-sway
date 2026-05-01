@@ -133,6 +133,18 @@ Stops the Lutris-managed game running in the headless Sway session. Used as **pr
 
 > **Note:** `start-lutris-game.sh` and `stop-lutris-game.sh` are automatically installed by `install.sh`.
 
+### `start-heroic-game.sh`
+Launches a Heroic game in the headless Sway session. Used via `detached` in apps.json entries. Handles:
+- Accepts `<runner> <game_id>` where runner is one of: legendary/gog/nile/sideload
+- Checks for Sway IPC socket existence before launching
+- Sets `WAYLAND_DISPLAY` for the headless session
+- Launches via `swaymsg exec "heroic heroic://launch/<runner>/<game_id> --no-gui --no-sandbox"`
+
+### `stop-heroic-game.sh`
+Kills ALL Heroic processes system-wide. Used as **prep-cmd.undo** for Heroic entries. Uses `pkill -f "heroic"` for broad process matching.
+
+> **Note:** `start-heroic-game.sh` and `stop-heroic-game.sh` are automatically installed by `install.sh`.
+
 ## `apps.json` Format & Conventions
 
 The live config at `~/.config/sunshine/apps.json` uses **Sunshine v2 format** (`"version": 2`).
@@ -204,6 +216,29 @@ Lutris games use the `detached` field with `start-lutris-game.sh`, similar to St
 ```
 
 Lutris undo uses `stop-lutris-game.sh` as the resolution undo hook, matching the pattern of using the game-stop script as cleanup.
+
+### Heroic detached entries
+
+Heroic games use the `detached` field with `start-heroic-game.sh`, similar to Steam entries:
+
+```json
+{
+  "name": "Game Name (Heroic/Legendary)",
+  "detached": ["~/.config/sway-sunshine/start-heroic-game.sh legendary <game_id>"],
+  "prep-cmd": [
+    {"do": "~/.config/sway-sunshine/restore-default-sink.sh", "undo": ""},
+    {"do": "~/.config/sway-sunshine/set-resolution.sh", "undo": "~/.config/sway-sunshine/stop-heroic-game.sh"}
+  ]
+}
+```
+
+Heroic undo uses `stop-heroic-game.sh` as the resolution undo hook, matching the pattern of using the game-stop script as cleanup.
+
+Runner types:
+- `legendary` - Epic Games Store games (installed via LegendaryXL)
+- `gog` - GOG games
+- `nile` - Amazon Prime Games (formerly Luna)
+- `sideload` - Sideloaded games
 
 ## install.sh Behavior
 
@@ -422,6 +457,21 @@ Document any new findings in AGENTS.md as you discover them.
 **Sunshine PR #5030 (merged April 21, 2026):** Fixed multi-GPU segfault and reverted Vulkan encoder support for wlr capture. Users on Sunshine >= 2026.421 should have this fix. The wlr capture now falls back to VAAPI/NVENC instead of Vulkan encoding.
 
 **Key insight:** The XR24 errors are from Sway's Vulkan renderer, not from Sunshine. They're a wlroots 0.19.3 bug on the headless backend. The stream may work despite these errors if frame capture succeeds.
+
+### Heroic Games Launcher
+
+Heroic Games Launcher is supported through `launchers/heroic.py`:
+
+- Reads Heroic's local JSON files for installed games:
+  - Epic/Legendary: `~/.config/heroic/legendaryConfig/legendary/installed.json` (or Flatpak path)
+  - GOG: `~/.config/heroic/gog_store/installed.json`
+  - Amazon/Nile: `~/.config/heroic/nile_config/nile/installed.json`
+  - Sideload: `~/.config/heroic/sideload_apps/library.json`
+- Returns `(game_id, title, "Heroic", runner)` where runner is one of: legendary/gog/nile/sideload
+- Launch command: `heroic heroic://launch/<runner>/<game_id> --no-gui --no-sandbox`
+- Detection: `which heroic` or `flatpak list | grep com.heroicgameslauncher.hgl`
+- Native: `heroic`, Flatpak: `flatpak run com.heroicgameslauncher.hgl`
+
 ## Working Commit Reference
 
 Working commit: `f8bba00397972d1b0200c0242c84f3c67db4e8a4`
